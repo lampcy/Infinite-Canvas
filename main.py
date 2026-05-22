@@ -197,7 +197,12 @@ NEXT_TASK_ID = 1
 UPDATE_LOCK = Lock()
 
 PROVIDER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{2,40}$")
-SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini"}
+SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "volcengine", "runninghub"}
+RUNNINGHUB_DEFAULT_BASE_URL = "https://www.runninghub.cn"
+RUNNINGHUB_DEFAULT_IMAGE_MODELS = [
+    "seedream-v5-lite/text-to-image",
+    "seedream-v5-lite/image-to-image",
+]
 
 def ensure_runtime_config_files():
     """首次运行时提前创建配置目录，避免第一次保存 API Key 时才创建目录/文件。"""
@@ -389,6 +394,8 @@ def provider_key_env(provider_id):
         return "COMFLY_API_KEY"
     if provider_id == "modelscope":
         return "MODELSCOPE_API_KEY"
+    if provider_id == "runninghub":
+        return "RUNNINGHUB_API_KEY"
     return f"API_PROVIDER_{re.sub(r'[^A-Za-z0-9]', '_', provider_id).upper()}_KEY"
 
 def mask_secret(value):
@@ -415,11 +422,26 @@ def default_api_providers():
             "ms_loras": MODELSCOPE_DEFAULT_LORAS,
             "ms_defaults_version": MODELSCOPE_DEFAULTS_VERSION,
         },
+        {
+            "id": "runninghub",
+            "name": "RunningHub",
+            "base_url": RUNNINGHUB_DEFAULT_BASE_URL,
+            "protocol": "runninghub",
+            "image_generation_endpoint": "",
+            "image_edit_endpoint": "",
+            "enabled": True,
+            "primary": False,
+            "image_models": RUNNINGHUB_DEFAULT_IMAGE_MODELS,
+            "chat_models": [],
+            "video_models": [],
+            "ms_loras": [],
+            "ms_defaults_version": 0,
+        },
     ]
 
 def merge_default_api_providers(providers):
     merged = [dict(item) for item in providers]
-    # 只强制保留 modelscope（不再强制 comfly）
+    # 强制保留独立入口平台（不再强制 comfly）
     ms_default = next((d for d in default_api_providers() if d["id"] == "modelscope"), None)
     if ms_default:
         current = next((item for item in merged if item.get("id") == "modelscope"), None)
@@ -437,6 +459,17 @@ def merge_default_api_providers(providers):
                 current["chat_models"] = chat_models
                 current["ms_loras"] = loras
                 current["ms_defaults_version"] = MODELSCOPE_DEFAULTS_VERSION
+    rh_default = next((d for d in default_api_providers() if d["id"] == "runninghub"), None)
+    if rh_default:
+        current = next((item for item in merged if item.get("id") == "runninghub"), None)
+        if not current:
+            merged.append(rh_default)
+        else:
+            if not current.get("base_url"):
+                current["base_url"] = rh_default["base_url"]
+            if not current.get("protocol") or current.get("protocol") == "openai":
+                current["protocol"] = "runninghub"
+            current["image_models"] = model_list_from_values([*(current.get("image_models") or []), *RUNNINGHUB_DEFAULT_IMAGE_MODELS])
     return merged
 
 def normalize_model_list(values):
@@ -510,6 +543,10 @@ def provider_endpoint_url(provider, key, default_path):
     if base_url.endswith("/v1beta") and default_path.startswith("/v1beta/"):
         return f"{base_url}{default_path[7:]}"
     return f"{base_url}{default_path}"
+
+def runninghub_endpoint_url(provider, path):
+    base_url = str((provider or {}).get("base_url") or RUNNINGHUB_DEFAULT_BASE_URL).strip().rstrip("/")
+    return f"{base_url}{path}"
 
 def normalize_provider(item):
     provider_id = str(item.get("id") or "").strip().lower()
@@ -733,13 +770,31 @@ def schedule_self_restart(delay_seconds: int = 3) -> bool:
             if not os.path.exists(launcher):
                 launcher = os.path.join(BASE_DIR, "start.bat")
             bat_path = os.path.join(BASE_DIR, "_self_restart.bat")
+            log_path = os.path.join(BASE_DIR, "_self_restart.log")
             script = (
                 "@echo off\r\n"
                 "chcp 65001 >nul\r\n"
+                "setlocal\r\n"
+                f"set \"APP_DIR={BASE_DIR}\"\r\n"
+                f"set \"LAUNCHER={launcher}\"\r\n"
+                f"set \"LOG_FILE={log_path}\"\r\n"
+                "echo [%date% %time%] restart scheduled >> \"%LOG_FILE%\"\r\n"
                 f"timeout /t {delay} /nobreak >nul\r\n"
+                "echo [%date% %time%] stopping old process >> \"%LOG_FILE%\"\r\n"
                 f"taskkill /F /PID {pid} >nul 2>&1\r\n"
-                f"cd /d \"{BASE_DIR}\"\r\n"
-                f"if exist \"{launcher}\" start \"\" \"{launcher}\"\r\n"
+                "timeout /t 2 /nobreak >nul\r\n"
+                "cd /d \"%APP_DIR%\"\r\n"
+                "if exist \"%LAUNCHER%\" (\r\n"
+                "  echo [%date% %time%] starting launcher: %LAUNCHER% >> \"%LOG_FILE%\"\r\n"
+                "  start \"ComfyUI-API-Modelscope\" /D \"%APP_DIR%\" cmd /k call \"%LAUNCHER%\"\r\n"
+                ") else (\r\n"
+                "  echo [%date% %time%] launcher missing, fallback to python main.py >> \"%LOG_FILE%\"\r\n"
+                "  if exist \"%APP_DIR%\\python\\python.exe\" (\r\n"
+                "    start \"ComfyUI-API-Modelscope\" /D \"%APP_DIR%\" cmd /k \"\"%APP_DIR%\\python\\python.exe\" main.py\"\r\n"
+                "  ) else (\r\n"
+                "    start \"ComfyUI-API-Modelscope\" /D \"%APP_DIR%\" cmd /k python main.py\r\n"
+                "  )\r\n"
+                ")\r\n"
                 "del \"%~f0\"\r\n"
             )
             with open(bat_path, "w", encoding="utf-8") as f:
@@ -1541,6 +1596,12 @@ def is_apimart_provider(provider):
 def is_gemini_provider(provider):
     return provider_protocol(provider) == "gemini"
 
+def is_volcengine_provider(provider):
+    return provider_protocol(provider) == "volcengine"
+
+def is_runninghub_provider(provider):
+    return provider_protocol(provider) == "runninghub" or str((provider or {}).get("id") or "").strip().lower() == "runninghub"
+
 async def wait_for_image_task(client, task_id, provider=None):
     base_url = (provider.get("base_url") if provider else AI_BASE_URL).rstrip("/")
     is_apimart = is_apimart_provider(provider)
@@ -2182,12 +2243,187 @@ async def generate_gemini_provider_image(prompt, size, model, reference_images=N
         raw = response.json()
         return extract_image(raw), raw
 
+def volcengine_endpoint_url(provider):
+    return provider_endpoint_url(provider, "image_generation_endpoint", "/api/v3/images/generations")
+
+def volcengine_image_payload(ref):
+    value = reference_to_data_url(ref, max_size=1536)
+    if not value:
+        return None
+    return value
+
+async def generate_volcengine_provider_image(prompt, size, model, reference_images=None, provider=None):
+    endpoint = volcengine_endpoint_url(provider)
+    body = {
+        "model": model,
+        "prompt": prompt,
+        "size": size,
+        "response_format": "url",
+    }
+    images = [volcengine_image_payload(ref) for ref in (reference_images or [])[:10]]
+    images = [value for value in images if value]
+    if images:
+        body["image"] = images
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)) as client:
+        response = await client.post(endpoint, headers=api_headers(provider=provider), json=body)
+        response.raise_for_status()
+        raw = response.json()
+        return extract_image(raw), raw
+
+def runninghub_api_headers(provider):
+    api_key = os.getenv(provider_key_env(provider["id"]), "")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="未配置 RunningHub API Key，请在 API 设置中填写。")
+    return {"Authorization": f"Bearer {api_key}", "Accept": "application/json", "Content-Type": "application/json"}
+
+def runninghub_task_endpoint(provider, model):
+    model_path = str(model or "").strip().strip("/")
+    if not model_path:
+        model_path = RUNNINGHUB_DEFAULT_IMAGE_MODELS[0]
+    if model_path.startswith("/openapi/"):
+        return runninghub_endpoint_url(provider, model_path)
+    if model_path.startswith("openapi/"):
+        return runninghub_endpoint_url(provider, f"/{model_path}")
+    return runninghub_endpoint_url(provider, f"/openapi/v2/{model_path}")
+
+def runninghub_query_status(raw):
+    if not isinstance(raw, dict):
+        return ""
+    values = [
+        raw.get("status"),
+        raw.get("state"),
+        raw.get("taskStatus"),
+        raw.get("task_status"),
+    ]
+    data = raw.get("data")
+    if isinstance(data, dict):
+        values.extend([data.get("status"), data.get("state"), data.get("taskStatus"), data.get("task_status")])
+    for value in values:
+        if value is not None:
+            return str(value).lower()
+    return ""
+
+def runninghub_extract_task_id(raw):
+    if not isinstance(raw, dict):
+        return ""
+    for key in ("taskId", "task_id", "id"):
+        if raw.get(key):
+            return str(raw[key])
+    data = raw.get("data")
+    if isinstance(data, dict):
+        for key in ("taskId", "task_id", "id"):
+            if data.get(key):
+                return str(data[key])
+    return ""
+
+def runninghub_extract_image(raw):
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=502, detail="RunningHub 返回格式不是 JSON 对象")
+    containers = [raw]
+    data = raw.get("data")
+    if isinstance(data, dict):
+        containers.append(data)
+    for container in containers:
+        results = container.get("results") or container.get("result") or container.get("outputs") or container.get("output")
+        if isinstance(results, dict):
+            results = [results]
+        if isinstance(results, list):
+            for item in results:
+                if isinstance(item, str) and item.startswith(("http://", "https://")):
+                    return {"type": "url", "value": item}
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "url" and item.get("value"):
+                    return {"type": "url", "value": item["value"]}
+                if item.get("type") == "b64" and item.get("value"):
+                    return {"type": "b64", "value": item["value"], "mime_type": item.get("mime_type") or "image/png"}
+                url = item.get("url") or item.get("fileUrl") or item.get("file_url") or item.get("download_url") or item.get("imageUrl") or item.get("image_url")
+                if isinstance(url, list) and url:
+                    url = url[0]
+                if isinstance(url, str) and url:
+                    return {"type": "url", "value": url}
+    return extract_image(raw)
+
+async def runninghub_upload_reference(client, provider, ref):
+    path = output_file_from_url(ref.get("url", ""))
+    if not path:
+        value = ref.get("url", "")
+        return value if str(value).startswith(("http://", "https://")) else ""
+    upload_url = runninghub_endpoint_url(provider, "/openapi/v2/media/upload/binary")
+    api_key = os.getenv(provider_key_env(provider["id"]), "")
+    headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+    with open(path, "rb") as fh:
+        files = {"file": (os.path.basename(path), fh, content_type_for_path(path))}
+        response = await client.post(upload_url, headers=headers, files=files, timeout=120)
+    response.raise_for_status()
+    raw = response.json()
+    data = raw.get("data") if isinstance(raw, dict) else None
+    candidates = [raw, data] if isinstance(data, dict) else [raw]
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        value = item.get("download_url") or item.get("downloadUrl") or item.get("url") or item.get("fileUrl") or item.get("file_url")
+        if value:
+            return str(value)
+    raise HTTPException(status_code=502, detail=f"RunningHub 上传图片未返回 download_url：{raw}")
+
+async def wait_for_runninghub_image_task(client, provider, task_id):
+    query_url = runninghub_endpoint_url(provider, "/openapi/v2/query")
+    deadline = time.monotonic() + 1800
+    last_payload = None
+    while time.monotonic() < deadline:
+        await asyncio.sleep(2)
+        response = await client.post(query_url, headers=runninghub_api_headers(provider), json={"taskId": task_id})
+        response.raise_for_status()
+        raw = response.json()
+        last_payload = raw
+        status = runninghub_query_status(raw)
+        if status in {"success", "succeeded", "completed", "complete", "finished", "finish", "done", "3"}:
+            return raw
+        if status in {"failed", "fail", "error", "canceled", "cancelled", "4"}:
+            raise HTTPException(status_code=502, detail=f"RunningHub 任务失败：{raw}")
+        try:
+            return {"data": {"results": [runninghub_extract_image(raw)]}}
+        except HTTPException:
+            pass
+    raise HTTPException(status_code=504, detail=f"RunningHub 生图任务超时：{last_payload}")
+
+async def generate_runninghub_provider_image(prompt, size, model, reference_images=None, provider=None):
+    endpoint = runninghub_task_endpoint(provider, model)
+    width, height = parse_size_pair(size)
+    body = {"prompt": prompt}
+    if width and height:
+        body.update({"width": width, "height": height})
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=180.0, pool=20.0)) as client:
+        image_urls = []
+        for ref in (reference_images or [])[:10]:
+            url = await runninghub_upload_reference(client, provider, ref)
+            if url:
+                image_urls.append(url)
+        if image_urls:
+            body["imageUrls"] = image_urls
+        response = await client.post(endpoint, headers=runninghub_api_headers(provider), json=body)
+        response.raise_for_status()
+        raw = response.json()
+        try:
+            return runninghub_extract_image(raw), raw
+        except HTTPException:
+            task_id = runninghub_extract_task_id(raw)
+            if not task_id:
+                raise HTTPException(status_code=502, detail=f"RunningHub 未返回 taskId 或图片结果：{raw}")
+        result = await wait_for_runninghub_image_task(client, provider, task_id)
+        return runninghub_extract_image(result), result
+
 async def generate_ai_image(prompt, size, quality, model, reference_images=None, provider_id="comfly"):
     provider = get_api_provider(provider_id)
     if provider["id"] == "modelscope":
         return await generate_modelscope_provider_image(prompt, size, model, reference_images, provider)
+    if is_runninghub_provider(provider):
+        return await generate_runninghub_provider_image(prompt, size, model, reference_images, provider)
     if is_gemini_provider(provider):
         return await generate_gemini_provider_image(prompt, size, model, reference_images, provider)
+    if is_volcengine_provider(provider):
+        return await generate_volcengine_provider_image(prompt, size, model, reference_images, provider)
     is_gpt2 = is_gpt_image_2_model(model)
     is_apimart = is_apimart_provider(provider)
     quality = str(quality or "").strip().lower()
@@ -2463,6 +2699,8 @@ async def save_providers(payload: List[ApiProviderPayload]):
             env_updates["VIDEO_MODELS"] = ",".join(provider.get("video_models") or [])
         if provider["id"] == "modelscope":
             env_updates["MODELSCOPE_CHAT_MODELS"] = ",".join(provider["chat_models"])
+        if provider["id"] == "runninghub":
+            provider["protocol"] = "runninghub"
     if not providers:
         raise HTTPException(status_code=400, detail="至少保留一个 API 平台")
     # 强制最多一个 primary（取最后被标记的；都没标记则保持原样不强制）
@@ -2508,11 +2746,17 @@ def protocol_from_payload(payload):
 def upstream_models_url(base_url: str, protocol: str):
     if protocol == "gemini":
         return f"{base_url}/models" if base_url.endswith("/v1beta") else f"{base_url}/v1beta/models"
+    if protocol == "volcengine":
+        return f"{base_url}/models" if base_url.endswith("/api/v3") else f"{base_url}/api/v3/models"
+    if protocol == "runninghub":
+        return f"{base_url}/openapi/v2/models"
     return f"{base_url}/models" if base_url.endswith("/v1") else f"{base_url}/v1/models"
 
 def upstream_model_headers(api_key: str, protocol: str):
     if protocol == "gemini":
         return {"x-goog-api-key": api_key, "Accept": "application/json"}
+    if protocol == "runninghub":
+        return {"Authorization": api_key, "Accept": "application/json"}
     return {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
 
 def classify_upstream_model(mid):
@@ -2520,7 +2764,7 @@ def classify_upstream_model(mid):
     video_keys = ["veo", "sora", "wan2", "wanx", "doubao-seedance", "doubao-1", "kling", "hailuo", "video", "t2v-", "i2v-", "s2v"]
     if any(k in lc for k in video_keys):
         return "video"
-    image_keys = ["banana", "image", "dalle", "dall-e", "imagen", "flux", "stable", "sdxl", "midjourney", "nano-banana", "ideogram", "fal-ai", "z-image", "qwen-image", "klein"]
+    image_keys = ["banana", "image", "dalle", "dall-e", "imagen", "flux", "stable", "sdxl", "midjourney", "nano-banana", "ideogram", "fal-ai", "z-image", "qwen-image", "klein", "seedream", "doubao-seedream", "text-to-image", "image-to-image"]
     if any(k in lc for k in image_keys):
         return "image"
     return "chat"
@@ -2641,7 +2885,7 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str 
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(url, headers=upstream_model_headers(api_key, protocol))
             if resp.status_code >= 400:
-                endpoint_label = "/v1beta/models" if protocol == "gemini" else "/v1/models"
+                endpoint_label = "/v1beta/models" if protocol == "gemini" else "/api/v3/models" if protocol == "volcengine" else "/openapi/v2/models" if protocol == "runninghub" else "/v1/models"
                 raise HTTPException(status_code=resp.status_code, detail=f"上游 {endpoint_label} 失败：{resp.text[:300]}")
             raw = resp.json()
     except httpx.HTTPError as e:
