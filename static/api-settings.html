@@ -15,12 +15,12 @@
             } catch(e) {}
         })();
     </script>
-    <script src="/static/vendor/js/tailwindcss-cdn.js?v=2026.06.14.1779672342"></script>
-    <script src="/static/vendor/js/lucide.js?v=2026.06.14.1779672342"></script>
-    <script src="/static/js/theme.js?v=2026.06.14.1780456238"></script>
-    <script src="/static/js/i18n.js?v=2026.06.14.1780902932"></script>
-    <link rel="stylesheet" href="/static/css/theme.css?v=2026.06.14.1779672341">
-    <link rel="stylesheet" href="/static/css/api-settings.css?v=2026.06.14.1781598852">
+    <script src="/static/vendor/js/tailwindcss-cdn.js?v=2026.06.18.1781755555"></script>
+    <script src="/static/vendor/js/lucide.js?v=2026.06.18.1781755555"></script>
+    <script src="/static/js/theme.js?v=2026.06.18.1781755555"></script>
+    <script src="/static/js/i18n.js?v=2026.06.18.1781755555"></script>
+    <link rel="stylesheet" href="/static/css/theme.css?v=2026.06.18.1781755555">
+    <link rel="stylesheet" href="/static/css/api-settings.css?v=2026.06.18.1782143577">
 </head>
 <body>
     <div class="page">
@@ -63,7 +63,7 @@
                             </div>
                         </div>
                         <div class="form">
-                            <label class="field full">
+                            <label class="field full api-basic-config-field">
                                 <span class="label" data-i18n="api.platformName">平台名称</span>
                                 <div class="field-frame"><input id="nameInput" type="text" placeholder="Comfly"></div>
                                 <span class="hint"><span data-i18n="api.platformIdShown">平台 ID</span>: <span id="idPreview" style="font-family:ui-monospace,Menlo,monospace;color:var(--text)">—</span></span>
@@ -195,7 +195,7 @@
                                 <div class="runninghub-hint">
                                 </div>
                             </label>
-                            <div id="jimengCliPanel" class="jimeng-cli-panel" hidden>
+                            <div id="jimengCliPanel" class="jimeng-cli-panel api-basic-config-field" hidden>
                                 <div class="jimeng-cli-head">
                                     <div>
                                         <div class="rh-key-title">即梦 CLI 账户</div>
@@ -213,7 +213,7 @@
                                 <div id="jimengLoginBox" class="jimeng-output" hidden></div>
                             </div>
                             <!-- 验证操作行 -->
-                            <div class="verify-action-row">
+                            <div class="verify-action-row api-basic-config-field">
                                 <button id="testUrlBtn" class="action-btn" type="button" onclick="testConnection()">
                                     <i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i><span data-i18n="api.testUrl">验证地址</span>
                                 </button>
@@ -228,6 +228,7 @@
                                         <option value="volcengine">方舟/Ark 任务协议</option>
                                         <option value="runninghub">RunningHub OpenAPI</option>
                                         <option value="jimeng">即梦 CLI</option>
+                                        <option value="weshop">WeShop OpenAPI</option>
                                     </select>
                                 </div>
                                 <div class="field-frame image-request-mode-wrap">
@@ -237,7 +238,24 @@
                                     </select>
                                 </div>
                             </div>
-                            <div id="verifyResult" style="display:none;padding:2px 0;grid-column:1/-1"></div>
+                            <div id="verifyResult" class="api-basic-config-field" style="display:none;padding:2px 0;grid-column:1/-1"></div>
+                            <div id="weshopMemberEmbed" class="field full weshop-member-embed" hidden>
+                                <div id="weshopApiReadyNotice" class="weshop-api-ready" hidden>
+                                    <div class="weshop-api-ready-icon"><i data-lucide="check" class="w-4 h-4"></i></div>
+                                    <div>
+                                        <div class="weshop-api-ready-title">WeShop API Key 已保存</div>
+                                        <div class="weshop-api-ready-desc">现在可以在下方查看可用模型，并回到画布使用 WeShop AI 生图或生视频。</div>
+                                    </div>
+                                </div>
+                                <iframe
+                                    id="weshopMemberFrame"
+                                    title="WeShop AI 会员购买"
+                                    loading="lazy"
+                                    allow="payment *; unload *"
+                                    referrerpolicy="strict-origin-when-cross-origin"
+                                    sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-top-navigation-by-user-activation">
+                                </iframe>
+                            </div>
                         </div>
                     </section>
 
@@ -471,6 +489,6 @@
         </div>
     </div>
 
-    <script src="/static/js/api-settings.js?v=2026.06.14.1781598684"></script>
+    <script src="/static/js/api-settings.js?v=2026.06.18.1782143625"></script>
 </body>
 </html>

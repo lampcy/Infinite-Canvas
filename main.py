@@ -263,8 +263,63 @@ JIMENG_LOGIN_SESSION = {
 }
 
 PROVIDER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{2,40}$")
-SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "volcengine", "runninghub", "jimeng"}
+SUPPORTED_PROVIDER_PROTOCOLS = {"openai", "apimart", "gemini", "volcengine", "runninghub", "jimeng", "weshop"}
 SUPPORTED_IMAGE_REQUEST_MODES = {"openai", "openai-json"}
+WESHOP_DEFAULT_BASE_URL = "https://openapi.weshop.ai"
+WESHOP_DEFAULT_IMAGE_MODELS = [
+    "z-image",
+    "gpt-image",
+    "seedream",
+    "midjourney",
+    "nano-banana-edit",
+    "qwen-image-edit",
+    "firered-image-edit",
+    "grok-imagine",
+]
+WESHOP_DEFAULT_VIDEO_MODELS = [
+    "seedance",
+    "sora-2",
+    "veo-ai",
+    "kling",
+    "wan-ai",
+    "vidu-ai",
+    "hailuo-ai",
+    "happyhorse",
+    "grok-imagine-video",
+    "ai-image-animation",
+]
+WESHOP_IMAGE_MODEL_PARAMS = {
+    "z-image": {"aspect_ratio": True, "max_refs": 0},
+    "gpt-image": {"aspect_ratio": True, "image_size": True, "quality": True, "max_refs": 5},
+    "seedream": {"aspect_ratio": True, "image_size": True, "max_refs": 14},
+    "midjourney": {"aspect_ratio": True, "max_refs": 0},
+    "nano-banana-edit": {"aspect_ratio": True, "max_refs": 8},
+    "qwen-image-edit": {"aspect_ratio": True, "max_refs": 3},
+    "firered-image-edit": {"aspect_ratio": True, "max_refs": 1},
+    "grok-imagine": {"aspect_ratio": True, "max_refs": 1},
+}
+WESHOP_VIDEO_MODEL_NAMES = {
+    "seedance": "Seedance_20",
+    "veo-ai": "Veo_3_1",
+}
+WESHOP_VIDEO_MODELS_REQUIRING_IMAGE = {"ai-image-animation"}
+WESHOP_VIDEO_IMAGE_LIMITS = {
+    "sora-2": 1,
+    "veo-ai": 1,
+    "seedance": 1,
+    "kling": 1,
+    "wan-ai": 1,
+    "vidu-ai": 1,
+    "hailuo-ai": 1,
+    "happyhorse": 1,
+    "grok-imagine-video": 1,
+    "ai-image-animation": 1,
+}
+WESHOP_VIDEO_RATIOS_16_9_9_16 = {"sora-2", "veo-ai", "grok-imagine-video"}
+WESHOP_TERMINAL_SUCCESS = {"SUCCESS", "SUCCEEDED", "COMPLETE", "COMPLETED", "DONE", "FINISHED"}
+WESHOP_TERMINAL_FAILURE = {"FAILED", "FAILURE", "ERROR", "CANCELED", "CANCELLED", "REJECTED", "EXPIRED", "TIMEOUT"}
+WESHOP_POLL_TIMEOUT = int(os.getenv("WESHOP_POLL_TIMEOUT", "1800") or 1800)
+WESHOP_POLL_INTERVAL = float(os.getenv("WESHOP_POLL_INTERVAL", "2.5") or 2.5)
 RUNNINGHUB_DEFAULT_BASE_URL = "https://www.runninghub.cn"
 RUNNINGHUB_OPENAPI_BASE_URL = "https://www.runninghub.cn/openapi/v2"
 RUNNINGHUB_MODEL_REGISTRY_URL = "https://raw.githubusercontent.com/HM-RunningHub/ComfyUI_RH_OpenAPI/main/models_registry.json"
@@ -753,6 +808,22 @@ def default_api_providers():
             "volcengine_project_name": VOLCENGINE_DEFAULT_PROJECT_NAME,
             "volcengine_region": VOLCENGINE_DEFAULT_REGION,
         },
+        {
+            "id": "weshop",
+            "name": "WeShop AI",
+            "base_url": WESHOP_DEFAULT_BASE_URL,
+            "protocol": "weshop",
+            "image_request_mode": "openai",
+            "image_generation_endpoint": "",
+            "image_edit_endpoint": "",
+            "enabled": True,
+            "primary": False,
+            "image_models": WESHOP_DEFAULT_IMAGE_MODELS,
+            "chat_models": [],
+            "video_models": WESHOP_DEFAULT_VIDEO_MODELS,
+            "ms_loras": [],
+            "ms_defaults_version": 0,
+        },
     ]
 
 def merge_default_api_providers(providers):
@@ -814,6 +885,16 @@ def merge_default_api_providers(providers):
             current["protocol"] = "volcengine"
             current["volcengine_project_name"] = str(current.get("volcengine_project_name") or VOLCENGINE_DEFAULT_PROJECT_NAME).strip() or VOLCENGINE_DEFAULT_PROJECT_NAME
             current["volcengine_region"] = str(current.get("volcengine_region") or VOLCENGINE_DEFAULT_REGION).strip() or VOLCENGINE_DEFAULT_REGION
+    weshop_default = next((d for d in default_api_providers() if d["id"] == "weshop"), None)
+    if weshop_default:
+        current = next((item for item in merged if item.get("id") == "weshop"), None)
+        if not current:
+            merged.append(weshop_default)
+        else:
+            current["protocol"] = "weshop"
+            current["base_url"] = current.get("base_url") or WESHOP_DEFAULT_BASE_URL
+            current["image_models"] = model_list_from_values([*(current.get("image_models") or []), *WESHOP_DEFAULT_IMAGE_MODELS])
+            current["video_models"] = model_list_from_values([*(current.get("video_models") or []), *WESHOP_DEFAULT_VIDEO_MODELS])
     # 即梦 CLI 不再是强制保留的默认平台：仅在用户已添加了即梦协议的平台时，规范化其默认模型/地址。
     for current in merged:
         if not is_jimeng_provider(current):
@@ -1135,6 +1216,9 @@ def normalize_provider(item):
     if provider_id == "runninghub":
         protocol = "runninghub"
         base_url = base_url or RUNNINGHUB_DEFAULT_BASE_URL
+    if provider_id == "weshop":
+        protocol = "weshop"
+        base_url = base_url or WESHOP_DEFAULT_BASE_URL
     return {
         "id": provider_id,
         "name": name,
@@ -3345,6 +3429,8 @@ def api_headers(json_body=True, provider=None, model=""):
             raise HTTPException(status_code=400, detail="未配置 COMFLY_API_KEY，请在 API/.env 中填写。")
     if provider and effective_protocol(provider, model) == "gemini":
         headers = {"Accept": "application/json", "x-goog-api-key": api_key}
+    elif provider and effective_protocol(provider, model) == "weshop":
+        headers = {"Accept": "application/json", "Authorization": strip_auth_scheme(api_key, "Bearer")}
     else:
         headers = {"Accept": "application/json", "Authorization": bearer_auth_value(api_key)}
     if json_body:
@@ -3659,7 +3745,7 @@ def provider_protocol(provider):
 # 单模型可覆盖的协议（仅 OpenAI / Gemini，二者可共用同一站点的 Base URL + Key）
 PER_MODEL_PROTOCOL_OPTIONS = {"openai", "gemini"}
 # 协议固定、不支持单模型覆盖的内置平台
-FIXED_PROTOCOL_PROVIDER_IDS = {"modelscope", "volcengine", "jimeng", "runninghub"}
+FIXED_PROTOCOL_PROVIDER_IDS = {"modelscope", "volcengine", "jimeng", "runninghub", "weshop"}
 
 def normalize_model_protocols(value):
     """规整 {模型名: 协议} 覆盖表，仅保留 openai/gemini。"""
@@ -3715,6 +3801,9 @@ def is_runninghub_provider(provider):
 
 def is_jimeng_provider(provider):
     return provider_protocol(provider) == "jimeng" or str((provider or {}).get("id") or "").strip().lower() == "jimeng"
+
+def is_weshop_provider(provider):
+    return provider_protocol(provider) == "weshop" or str((provider or {}).get("id") or "").strip().lower() == "weshop"
 
 def is_yuli_provider(provider):
     # 玉玉API（yuli.host）的视频接口走自有格式（/v1/video/create + /v1/video/query），
@@ -8453,10 +8542,275 @@ async def generate_runninghub_video(payload, provider):
         local_urls = [await save_remote_video_to_output(url, prefix="rh_video_") for url in urls]
         return {"videos": local_urls, "task_id": task_id, "raw": result}
 
+def weshop_api_root(provider):
+    return (provider.get("base_url") or WESHOP_DEFAULT_BASE_URL).rstrip("/") or WESHOP_DEFAULT_BASE_URL
+
+def weshop_headers(provider, json_body=True):
+    headers = api_headers(json_body=json_body, provider=provider)
+    headers["Authorization"] = strip_auth_scheme(headers.get("Authorization", ""), "Bearer")
+    return headers
+
+def weshop_collect_media(raw, kind="image"):
+    key = "video" if kind == "video" else "image"
+    found = []
+    def collect(value, depth=0):
+        if depth > 8 or value is None:
+            return
+        if isinstance(value, str):
+            if value.startswith(("http://", "https://", "/output/", "/assets/")):
+                found.append(value)
+            return
+        if isinstance(value, list):
+            for item in value:
+                collect(item, depth + 1)
+            return
+        if not isinstance(value, dict):
+            return
+        for name in (key, f"{key}Url", f"{key}_url", "url", "output", "download_url", "downloadUrl"):
+            if name in value:
+                collect(value.get(name), depth + 1)
+        for name in ("result", "results", "outputs", "data", "executions"):
+            if name in value:
+                collect(value.get(name), depth + 1)
+    collect(raw)
+    deduped = []
+    for url in found:
+        if url and url not in deduped:
+            deduped.append(url)
+    return deduped
+
+def weshop_extract_execution_id(raw):
+    if not isinstance(raw, dict):
+        return ""
+    meta = raw.get("meta") if isinstance(raw.get("meta"), dict) else {}
+    data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+    executions = data.get("executions") if isinstance(data.get("executions"), list) else []
+    if meta.get("executionId"):
+        return str(meta["executionId"])
+    if data.get("executionId"):
+        return str(data["executionId"])
+    for item in executions:
+        if isinstance(item, dict) and item.get("executionId"):
+            return str(item["executionId"])
+    return ""
+
+def weshop_status_payload(raw):
+    data = raw.get("data") if isinstance(raw, dict) and isinstance(raw.get("data"), dict) else {}
+    executions = data.get("executions") if isinstance(data.get("executions"), list) else []
+    latest = executions[-1] if executions and isinstance(executions[-1], dict) else {}
+    return latest or data or raw
+
+def weshop_run_status(raw):
+    payload = weshop_status_payload(raw)
+    return str(payload.get("status") if isinstance(payload, dict) else "").strip().upper()
+
+def weshop_raise_for_envelope(raw, prefix="WeShop OpenAPI"):
+    if isinstance(raw, dict) and raw.get("success") is False:
+        err = raw.get("error") if isinstance(raw.get("error"), dict) else {}
+        msg = err.get("message") or raw.get("message") or str(raw)
+        raise HTTPException(status_code=502, detail=f"{prefix} 错误：{msg}")
+
+async def weshop_upload_image(client, provider, ref):
+    url = str((ref or {}).get("url") or "").strip()
+    if not url:
+        return ""
+    if url.startswith(("http://", "https://")):
+        return url
+    path = output_file_from_url(url)
+    if path and os.path.isfile(path):
+        filename = os.path.basename(path)
+        mime = content_type_for_path(path) or "image/png"
+        with open(path, "rb") as f:
+            content = f.read()
+    else:
+        data_url = reference_to_data_url(ref, max_size=1536)
+        if data_url.startswith(("http://", "https://")):
+            return data_url
+        if not data_url.startswith("data:") or "," not in data_url:
+            return ""
+        header, encoded = data_url.split(",", 1)
+        mime = header.split(":", 1)[1].split(";", 1)[0] if ":" in header else "image/png"
+        filename = f"weshop_ref_{uuid.uuid4().hex[:8]}{mimetypes.guess_extension(mime) or '.png'}"
+        content = base64.b64decode(encoded)
+    response = await client.post(
+        f"{weshop_api_root(provider)}/openapi/agent/assets/images",
+        headers=weshop_headers(provider, json_body=False),
+        files={"image": (filename, content, mime)},
+    )
+    response.raise_for_status()
+    raw = response.json()
+    weshop_raise_for_envelope(raw, "WeShop 图片上传")
+    data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+    image = data.get("image") or data.get("url") or data.get("imageUrl")
+    if not image:
+        raise HTTPException(status_code=502, detail=f"WeShop 图片上传成功但未返回 data.image：{raw}")
+    return str(image)
+
+async def weshop_prepare_images(client, provider, refs, limit=5):
+    urls = []
+    for ref in (refs or [])[:limit]:
+        uploaded = await weshop_upload_image(client, provider, ref)
+        if uploaded:
+            urls.append(uploaded)
+    return urls
+
+def weshop_aspect_ratio_from_size(size, fallback="1:1", allowed=None):
+    width, height = parse_size_pair(size)
+    choices = allowed or ["1:1", "2:3", "3:2", "4:3", "3:4", "16:9", "9:16", "21:9"]
+    if width and height:
+        ratio = width / max(1, height)
+        return min(choices, key=lambda item: abs(ratio - (float(item.split(":", 1)[0]) / float(item.split(":", 1)[1]))))
+    return fallback if fallback in choices else choices[0]
+
+def weshop_image_size(size, allowed=None):
+    allowed_values = list(allowed or ["1K", "2K", "4K"])
+    width, height = parse_size_pair(size)
+    longest = max(width, height)
+    if longest >= 3000 and "4K" in allowed_values:
+        return "4K"
+    if longest >= 2200 and "3K" in allowed_values:
+        return "3K"
+    if longest >= 1600 and "2K" in allowed_values:
+        return "2K"
+    return allowed_values[0] if allowed_values else "1K"
+
+def weshop_video_duration(value, allowed=(4, 6, 8), fallback=4):
+    try:
+        seconds = int(float(value or fallback))
+    except Exception:
+        seconds = fallback
+    closest = min(allowed, key=lambda item: abs(item - seconds))
+    return f"{closest}s"
+
+def weshop_model_name_for_video(agent, payload):
+    requested = str(payload.model or "").strip().lower()
+    if agent == "seedance":
+        if "15" in requested:
+            return "Seedance_15_Pro"
+        if "10" in requested and "fast" in requested:
+            return "Seedance_10_Pro_Fast"
+        if "10" in requested:
+            return "Seedance_10_Pro"
+    if agent == "veo-ai" and "fast" in requested:
+        return "Veo_3_1_Fast"
+    return WESHOP_VIDEO_MODEL_NAMES.get(agent, "")
+
+async def weshop_wait_for_run(client, provider, execution_id, kind="image"):
+    deadline = time.monotonic() + WESHOP_POLL_TIMEOUT
+    last_payload = {}
+    while time.monotonic() < deadline:
+        await asyncio.sleep(WESHOP_POLL_INTERVAL)
+        response = await client.get(
+            f"{weshop_api_root(provider)}/openapi/agent/runs/{urllib.parse.quote(str(execution_id), safe='')}",
+            headers=weshop_headers(provider),
+        )
+        response.raise_for_status()
+        raw = response.json()
+        weshop_raise_for_envelope(raw)
+        last_payload = raw
+        status = weshop_run_status(raw)
+        if status in WESHOP_TERMINAL_SUCCESS or weshop_collect_media(raw, kind):
+            return raw
+        if status in WESHOP_TERMINAL_FAILURE:
+            payload = weshop_status_payload(raw)
+            msg = payload.get("message") or payload.get("error") or str(raw) if isinstance(payload, dict) else str(raw)
+            raise HTTPException(status_code=502, detail=f"WeShop 任务失败：{msg}")
+    raise HTTPException(status_code=504, detail=f"WeShop 任务超时：{last_payload or execution_id}")
+
+async def weshop_submit_run(client, provider, agent_name, input_payload, params):
+    response = await client.post(
+        f"{weshop_api_root(provider)}/openapi/agent/runs",
+        headers=weshop_headers(provider),
+        json={
+            "agent": {"name": agent_name, "version": "v1.0"},
+            "input": input_payload,
+            "params": params,
+        },
+    )
+    response.raise_for_status()
+    raw = response.json()
+    weshop_raise_for_envelope(raw)
+    return raw
+
+async def generate_weshop_provider_image(prompt, size, quality, model, reference_images=None, provider=None):
+    agent = selected_model(model, WESHOP_DEFAULT_IMAGE_MODELS[0])
+    refs = [ref for ref in (reference_images or []) if ref.get("url")]
+    model_config = WESHOP_IMAGE_MODEL_PARAMS.get(agent, {"aspect_ratio": True})
+    max_refs = int(model_config["max_refs"]) if "max_refs" in model_config else 1
+    params = {"textDescription": prompt, "batchCount": 1}
+    if model_config.get("aspect_ratio"):
+        params["aspectRatio"] = weshop_aspect_ratio_from_size(size, "1:1")
+    if model_config.get("image_size"):
+        params["imageSize"] = weshop_image_size(size, model_config.get("image_sizes"))
+    if model_config.get("quality"):
+        q = str(quality or "").strip().lower()
+        params["quality"] = q if q in {"low", "medium", "high"} else "low"
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0), follow_redirects=True) as client:
+        image_urls = await weshop_prepare_images(client, provider, refs, max_refs) if max_refs > 0 else []
+        input_payload = {"taskName": f"infinite-canvas-{agent}-{uuid.uuid4().hex[:8]}"}
+        if image_urls:
+            input_payload["images"] = image_urls
+            input_payload["originalImage"] = image_urls[0]
+            params["images"] = image_urls
+        raw = await weshop_submit_run(client, provider, agent, input_payload, params)
+        execution_id = weshop_extract_execution_id(raw)
+        result = raw
+        if execution_id and not weshop_collect_media(raw, "image"):
+            result = await weshop_wait_for_run(client, provider, execution_id, "image")
+        urls = weshop_collect_media(result, "image")
+        if not urls:
+            raise HTTPException(status_code=502, detail=f"WeShop 生图成功但没有返回图片：{result}")
+        return {"type": "url", "value": urls[0]}, result
+
+async def generate_weshop_video(payload: CanvasVideoRequest, provider):
+    agent = selected_model(payload.model, WESHOP_DEFAULT_VIDEO_MODELS[0])
+    image_refs = [ref.dict() if hasattr(ref, "dict") else ref for ref in (payload.images or []) if getattr(ref, "url", "") or (isinstance(ref, dict) and ref.get("url"))]
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0), follow_redirects=True) as client:
+        image_limit = int(WESHOP_VIDEO_IMAGE_LIMITS.get(agent, 1))
+        image_urls = await weshop_prepare_images(client, provider, image_refs, image_limit) if image_limit > 0 else []
+        if agent in WESHOP_VIDEO_MODELS_REQUIRING_IMAGE and not image_urls:
+            raise HTTPException(status_code=400, detail=f"WeShop {agent} 需要至少 1 张参考图")
+        input_payload = {"taskName": f"infinite-canvas-{agent}-{uuid.uuid4().hex[:8]}"}
+        params = {"textDescription": payload.prompt, "batchCount": 1}
+        if image_urls:
+            input_payload["images"] = image_urls
+            input_payload["originalImage"] = image_urls[0]
+            params["images"] = image_urls[:image_limit]
+        ratio_allowed = ["16:9", "9:16"] if agent in WESHOP_VIDEO_RATIOS_16_9_9_16 else ["21:9", "16:9", "9:16", "3:4", "4:3", "1:1"]
+        ratio = str(payload.aspect_ratio or "").strip()
+        params["aspectRatio"] = ratio if ratio in ratio_allowed else weshop_aspect_ratio_from_size(payload.size, ratio_allowed[0], ratio_allowed)
+        if agent == "sora-2":
+            params["duration"] = weshop_video_duration(payload.duration, allowed=(4, 8, 12), fallback=4)
+        elif agent == "veo-ai":
+            params["duration"] = weshop_video_duration(payload.duration, allowed=(4, 6, 8), fallback=4)
+            params["modelName"] = weshop_model_name_for_video(agent, payload)
+        elif agent == "seedance":
+            try:
+                duration = int(payload.duration or 4)
+            except Exception:
+                duration = 4
+            params["duration"] = f"{max(4, min(15, duration))}s"
+            params["modelName"] = weshop_model_name_for_video(agent, payload)
+            params["generateAudio"] = "true" if payload.generate_audio else "false"
+        else:
+            params["duration"] = weshop_video_duration(payload.duration, allowed=(4, 5, 6, 8, 10), fallback=5)
+        raw = await weshop_submit_run(client, provider, agent, input_payload, params)
+        execution_id = weshop_extract_execution_id(raw)
+        result = raw
+        if execution_id and not weshop_collect_media(raw, "video"):
+            result = await weshop_wait_for_run(client, provider, execution_id, "video")
+        urls = weshop_collect_media(result, "video")
+        if not urls:
+            raise HTTPException(status_code=502, detail=f"WeShop 视频生成成功但没有返回视频：{result}")
+        local_urls = [await save_remote_video_to_output(url, prefix="weshop_video_") for url in urls]
+        return {"videos": local_urls, "task_id": execution_id or None, "raw": result}
+
 async def generate_ai_image(prompt, size, quality, model, reference_images=None, provider_id="comfly"):
     provider = get_api_provider(provider_id)
     if provider["id"] == "modelscope":
         return await generate_modelscope_provider_image(prompt, size, model, reference_images, provider)
+    if is_weshop_provider(provider):
+        return await generate_weshop_provider_image(prompt, size, quality, model, reference_images, provider)
     if is_jimeng_provider(provider):
         return await generate_jimeng_provider_image(prompt, size, model, reference_images, provider)
     if is_runninghub_provider(provider):
@@ -10193,6 +10547,8 @@ async def save_providers(payload: List[ApiProviderPayload]):
             provider["protocol"] = "runninghub"
         if provider["id"] == "volcengine":
             provider["protocol"] = "volcengine"
+        if provider["id"] == "weshop":
+            provider["protocol"] = "weshop"
     if not providers:
         raise HTTPException(status_code=400, detail="至少保留一个 API 平台")
     # 强制最多一个 primary（取最后被标记的；都没标记则保持原样不强制）
@@ -10241,6 +10597,8 @@ def protocol_from_payload(payload):
         return "runninghub"
     if provider_id == "jimeng":
         return "jimeng"
+    if provider_id == "weshop":
+        return "weshop"
     base_url = str(getattr(payload, "base_url", "") or "").strip().lower()
     if "runninghub.cn" in base_url or "runninghub.ai" in base_url:
         return "runninghub"
@@ -10272,6 +10630,8 @@ def upstream_models_url(base_url: str, protocol: str):
         return f"{base_url}/models" if base_url.endswith("/api/v3") else f"{base_url}/api/v3/models"
     if protocol == "runninghub":
         return runninghub_openapi_url({"base_url": base_url}, "models")
+    if protocol == "weshop":
+        return f"{base_url}/openapi/agent/openapi.yaml"
     return f"{base_url}/models" if base_url.endswith("/v1") else f"{base_url}/v1/models"
 
 def upstream_model_headers(api_key: str, protocol: str):
@@ -10279,6 +10639,8 @@ def upstream_model_headers(api_key: str, protocol: str):
         return {"x-goog-api-key": api_key, "Accept": "application/json"}
     if protocol == "runninghub":
         return {"Authorization": bearer_auth_value(api_key), "Accept": "application/json"}
+    if protocol == "weshop":
+        return {"Authorization": strip_auth_scheme(api_key, "Bearer"), "Accept": "application/json"}
     return {"Authorization": bearer_auth_value(api_key), "Accept": "application/json"}
 
 def volcengine_default_model_payload(status=200, message="", raw=None):
@@ -10452,6 +10814,21 @@ def apply_agnes_model_defaults(base_url, grouped, ids):
     grouped["video"] = sorted(set(grouped.get("video") or []))
     return grouped, ids
 
+def weshop_models_payload():
+    image_models = model_list_from_values(WESHOP_DEFAULT_IMAGE_MODELS)
+    video_models = model_list_from_values(WESHOP_DEFAULT_VIDEO_MODELS)
+    all_models = [*image_models, *video_models]
+    return {
+        "total": len(all_models),
+        "model_count": len(all_models),
+        "protocol": "weshop",
+        "image_models": image_models,
+        "chat_models": [],
+        "video_models": video_models,
+        "all": all_models,
+        "message": "WeShop OpenAPI 可用，已载入官方 Premium OpenAPI agent 列表。",
+    }
+
 @app.post("/api/providers/test-connection")
 async def test_provider_connection(payload: TestConnectionPayload):
     """测试请求地址是否可用：调上游 /v1/models。验证通过时同时把模型清单按类别返回，避免再调一次拉取接口。"""
@@ -10484,6 +10861,24 @@ async def test_provider_connection(payload: TestConnectionPayload):
             "protocol": "runninghub",
             "raw": payload_models.get("raw"),
         }
+    if protocol == "weshop":
+        base_url = (payload.base_url or WESHOP_DEFAULT_BASE_URL).strip().rstrip("/")
+        api_key = api_key_from_payload(payload, protocol)
+        if not api_key:
+            raise HTTPException(status_code=400, detail="请先填写或保存 WeShop API Key")
+        payload_models = weshop_models_payload()
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(f"{base_url}/openapi/agent/openapi.yaml", headers=upstream_model_headers(api_key, "weshop"))
+                if resp.status_code in (401, 403):
+                    return {"ok": False, "status": resp.status_code, "message": "WeShop API Key 无效或无权限", **payload_models}
+                if 400 <= resp.status_code < 500 and resp.status_code != 404:
+                    return {"ok": False, "status": resp.status_code, "message": f"WeShop OpenAPI 校验失败 (HTTP {resp.status_code})：{resp.text[:200]}", **payload_models}
+                if resp.status_code >= 500:
+                    return {"ok": False, "status": resp.status_code, "message": f"WeShop OpenAPI spec 暂不可用 (HTTP {resp.status_code})", **payload_models}
+                return {"ok": True, "status": resp.status_code, "message": payload_models["message"], **payload_models, "raw": {"spec_status": resp.status_code}}
+        except httpx.HTTPError as e:
+            return {"ok": False, "status": 0, "message": f"WeShop OpenAPI 连接失败：{str(e)[:300]}", **payload_models}
     base_url = (payload.base_url or "").strip().rstrip("/")
     if not base_url:
         raise HTTPException(status_code=400, detail="请先填写请求地址")
@@ -10688,6 +11083,8 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str 
     if protocol == "runninghub":
         provider = {"id": "runninghub", "name": "RunningHub", "base_url": base_url or RUNNINGHUB_DEFAULT_BASE_URL, "protocol": "runninghub", "api_key": api_key}
         return await runninghub_models_payload(provider)
+    if protocol == "weshop":
+        return weshop_models_payload()
     base_url = (base_url or "").strip().rstrip("/")
     if not base_url:
         raise HTTPException(status_code=400, detail="请先填写请求地址")
@@ -11570,6 +11967,15 @@ async def canvas_video(payload: CanvasVideoRequest):
     provider = get_api_provider(payload.provider_id)
     if is_jimeng_provider(provider):
         return await generate_jimeng_video(payload, provider)
+    if is_weshop_provider(provider):
+        try:
+            return await generate_weshop_video(payload, provider)
+        except httpx.HTTPStatusError as exc:
+            text = exc.response.text
+            raise HTTPException(status_code=exc.response.status_code, detail=f"WeShop 视频接口错误：{text}") from exc
+        except httpx.HTTPError as exc:
+            log_net_error(f"视频(WeShop) 网络/TLS错误 model={payload.model}", exc)
+            raise HTTPException(status_code=502, detail=f"请求 WeShop 视频接口失败：{exc}") from exc
     if is_runninghub_provider(provider):
         try:
             return await generate_runninghub_video(payload, provider)

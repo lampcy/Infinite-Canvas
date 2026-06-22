@@ -28,6 +28,9 @@ const jimengHelpOverlay = document.getElementById('jimengHelpOverlay');
 const jimengHelpCommand = document.getElementById('jimengHelpCommand');
 const jimengHelpOutput = document.getElementById('jimengHelpOutput');
 const runninghubConfigBlock = document.getElementById('runninghubConfigBlock');
+const weshopMemberEmbed = document.getElementById('weshopMemberEmbed');
+const weshopMemberFrame = document.getElementById('weshopMemberFrame');
+const weshopApiReadyNotice = document.getElementById('weshopApiReadyNotice');
 const rhPasteInput = document.getElementById('rhPasteInput');
 const rhAppsList = document.getElementById('rhAppsList');
 const rhWorkflowsList = document.getElementById('rhWorkflowsList');
@@ -66,9 +69,15 @@ const MS_BUILTIN_IMAGE_MODELS = [
 ];
 const MS_DEFAULT_BASE_URL = 'https://api-inference.modelscope.cn/v1';
 const RH_DEFAULT_BASE_URL = 'https://www.runninghub.cn';
+const WESHOP_DEFAULT_BASE_URL = 'https://openapi.weshop.ai';
+const WESHOP_MEMBER_URL = 'https://pre.weshop.ai/infinite-canvas-member?checkout_target=top';
+const WESHOP_MEMBER_ORIGINS = new Set(['https://www.weshop.ai', 'https://pre.weshop.ai']);
+const WESHOP_PAY_SUCCESS_PARAMS = new Set(['weshopPaySuccess', 'paySuccess']);
 const EXAMPLE_BASE_URL = 'https://api.example.com/v1';
 const JIMENG_DEFAULT_IMAGE_MODELS = ['5.0', '4.6', '4.5', '4.1', '4.0', '3.1', '3.0'];
 const JIMENG_DEFAULT_VIDEO_MODELS = ['seedance2.0fast_vip', 'seedance2.0_vip'];
+const WESHOP_DEFAULT_IMAGE_MODELS = ['z-image', 'gpt-image', 'seedream', 'midjourney', 'nano-banana-edit', 'qwen-image-edit', 'firered-image-edit', 'grok-imagine'];
+const WESHOP_DEFAULT_VIDEO_MODELS = ['seedance', 'sora-2', 'veo-ai', 'kling', 'wan-ai', 'vidu-ai', 'hailuo-ai', 'happyhorse', 'grok-imagine-video', 'ai-image-animation'];
 const JIMENG_LEGACY_IMAGE_MODELS = new Set(['jimeng-image-2k', 'jimeng-image-4k']);
 const JIMENG_LEGACY_VIDEO_MODELS = new Set(['jimeng-video-720p', 'jimeng-video-1080p']);
 const ONBOARDING_GUIDES = {
@@ -234,7 +243,7 @@ function deriveIdFromName(name, existingId){
 function updateIdPreview(){
     const item = provider();
     if(!item) return;
-    const isBuiltin = item.id === 'comfly' || item.id === 'modelscope' || item.id === 'runninghub' || item.id === 'volcengine' || item.id === 'jimeng';
+    const isBuiltin = item.id === 'comfly' || item.id === 'modelscope' || item.id === 'runninghub' || item.id === 'volcengine' || item.id === 'jimeng' || item.id === 'weshop';
     const idPreview = document.getElementById('idPreview');
     if(!idPreview) return;
     if(isBuiltin){
@@ -255,7 +264,7 @@ function visibleProviders(){
 function isFixedProvider(itemOrId){
     const id = typeof itemOrId === 'string' ? itemOrId : itemOrId?.id;
     // 即梦 CLI 不再是固定平台：可删除、可排序，未添加则不存在。
-    return id === 'modelscope' || id === 'runninghub' || id === 'volcengine';
+    return id === 'modelscope' || id === 'runninghub' || id === 'volcengine' || id === 'weshop';
 }
 function unique(values){
     const seen = new Set();
@@ -539,6 +548,36 @@ function syncOnboardingKeyInput(kind, value){
     else if(kind === 'wallet' && rhWalletKeyInput) rhWalletKeyInput.value = value || '';
     else if(keyInput) keyInput.value = value || '';
 }
+function weshopReturnUrl(){
+    const url = new URL(window.location.href);
+    url.searchParams.set('weshopPaySuccess', 'true');
+    url.hash = '';
+    return url.toString();
+}
+function weshopMemberUrl(){
+    try {
+        const url = new URL(WESHOP_MEMBER_URL);
+        url.searchParams.set('checkout_target', 'top');
+        url.searchParams.set('return_url', weshopReturnUrl());
+        return url.toString();
+    } catch(e) {
+        return WESHOP_MEMBER_URL;
+    }
+}
+function isWeshopPaySuccessReturn(){
+    const params = new URLSearchParams(window.location.search || '');
+    for(const key of WESHOP_PAY_SUCCESS_PARAMS){
+        if(String(params.get(key) || '').toLowerCase() === 'true') return true;
+    }
+    return false;
+}
+function clearWeshopPaySuccessUrl(){
+    try {
+        const url = new URL(window.location.href);
+        WESHOP_PAY_SUCCESS_PARAMS.forEach(key => url.searchParams.delete(key));
+        window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
+    } catch(e) {}
+}
 async function saveOnboardingRunningHubKey(){
     const freeKey = rhFreeKeyInput?.value.trim() || '';
     if(!freeKey){ alert(tr('api.rhEnterCoinAlert')); return; }
@@ -578,6 +617,11 @@ function applyProviderOnboardingDefaults(id){
         item.protocol = 'jimeng';
         item.image_models = unique([...(item.image_models || []).filter(model => !JIMENG_LEGACY_IMAGE_MODELS.has(String(model || '').trim())), ...JIMENG_DEFAULT_IMAGE_MODELS]);
         item.video_models = unique([...(item.video_models || []).filter(model => !JIMENG_LEGACY_VIDEO_MODELS.has(String(model || '').trim())), ...JIMENG_DEFAULT_VIDEO_MODELS]);
+    } else if(id === 'weshop'){
+        item.base_url = WESHOP_DEFAULT_BASE_URL;
+        item.protocol = 'weshop';
+        item.image_models = unique([...(item.image_models || []), ...WESHOP_DEFAULT_IMAGE_MODELS]);
+        item.video_models = unique([...(item.video_models || []), ...WESHOP_DEFAULT_VIDEO_MODELS]);
     }
     selectedId = item.id;
     renderEditor();
@@ -591,18 +635,18 @@ function syncEditor(){
     const item = provider();
     if(!item) return;
     const oldId = item.id;
-    const isBuiltin = item.id === 'comfly' || item.id === 'modelscope' || item.id === 'runninghub' || item.id === 'volcengine' || item.id === 'jimeng';
+    const isBuiltin = item.id === 'comfly' || item.id === 'modelscope' || item.id === 'runninghub' || item.id === 'volcengine' || item.id === 'jimeng' || item.id === 'weshop';
     // 内置和自定义平台的 ID 都保持稳定；新建时若没有 ID 才生成一次。
     const nextId = isBuiltin ? item.id : deriveIdFromName(nameInput.value, item.id);
     item.id = nextId;
     if(oldId !== item.id) selectedId = item.id;
     item.name = nameInput.value.trim() || item.id;
-    const selectedProtocol = item.id === 'modelscope' ? 'openai' : item.id === 'runninghub' ? 'runninghub' : item.id === 'volcengine' ? 'volcengine' : item.id === 'jimeng' ? 'jimeng' : (protocolInput?.value || 'openai');
+    const selectedProtocol = item.id === 'modelscope' ? 'openai' : item.id === 'runninghub' ? 'runninghub' : item.id === 'volcengine' ? 'volcengine' : item.id === 'jimeng' ? 'jimeng' : item.id === 'weshop' ? 'weshop' : (protocolInput?.value || 'openai');
     item.base_url = selectedProtocol === 'jimeng' ? '' : baseInput.value.trim();
     // 固定平台不从协议下拉读取
     item.protocol = selectedProtocol;
     item.image_request_mode = normalizeImageRequestMode(
-        item.id === 'modelscope' || item.id === 'runninghub' || item.id === 'volcengine' || item.id === 'jimeng'
+        item.id === 'modelscope' || item.id === 'runninghub' || item.id === 'volcengine' || item.id === 'jimeng' || item.id === 'weshop'
             ? 'openai'
             : (imageRequestModeInput?.value || item.image_request_mode)
     );
@@ -634,9 +678,9 @@ function ensureRunningHubLists(item){
 }
 function updateProtocolFromInput(){
     const item = provider();
-    if(!item || !protocolInput || item.id === 'modelscope' || item.id === 'runninghub' || item.id === 'volcengine' || item.id === 'jimeng') return;
+    if(!item || !protocolInput || item.id === 'modelscope' || item.id === 'runninghub' || item.id === 'volcengine' || item.id === 'jimeng' || item.id === 'weshop') return;
     const value = String(protocolInput.value || 'openai').toLowerCase();
-    item.protocol = ['openai', 'apimart', 'gemini', 'volcengine', 'runninghub', 'jimeng'].includes(value) ? value : 'openai';
+    item.protocol = ['openai', 'apimart', 'gemini', 'volcengine', 'runninghub', 'jimeng', 'weshop'].includes(value) ? value : 'openai';
     if(item.protocol === 'jimeng') item.base_url = '';
     document.body.classList.toggle('show-jimeng', item.protocol === 'jimeng');
     clearVerifyResult();
@@ -2078,7 +2122,7 @@ async function saveRecommendedApi(index){
     if(ok) setStatus(trf('api.recommendSaved', {name:api.name}));
 }
 function sortedProviders(){
-    const order = ['modelscope', 'runninghub', 'volcengine'];
+    const order = ['modelscope', 'weshop', 'runninghub', 'volcengine'];
     return visibleProviders().sort((a, b) => {
         const ai = order.indexOf(a.id);
         const bi = order.indexOf(b.id);
@@ -2087,6 +2131,10 @@ function sortedProviders(){
         if(bi === -1) return -1;
         return ai - bi;
     });
+}
+function defaultSelectedProvider(){
+    const list = sortedProviders();
+    return list.find(item => item.id !== 'weshop') || list[0] || null;
 }
 function providerDragAttrs(item){
     if(isFixedProvider(item)) return '';
@@ -2136,6 +2184,19 @@ function renderProviderList(){
                             <span class="provider-logo-fallback">火山引擎</span>
                         </span>
                         <span class="provider-protocol-pill">Ark</span>
+                    </span>
+                </button>
+            `;
+        }
+        if(item.id === 'weshop'){
+            return `
+                <button class="provider-card provider-card-banner weshop-provider-card ${active} ${stateClass}" type="button" onclick="selectProvider('${escapeHtml(item.id)}')">
+                    <span class="provider-banner-inner">
+                        <span class="provider-logo-wrap">
+                            <img src="/static/images/ic_weshop_logo_dark.svg" alt="WeShop AI" class="weshop-icon">
+                            <span class="provider-logo-fallback">WeShop AI</span>
+                        </span>
+                        <span class="provider-protocol-pill">AI</span>
                     </span>
                 </button>
             `;
@@ -2206,7 +2267,7 @@ function renderEditor(){
     clearVerifyResult();
     baseInput.placeholder = EXAMPLE_BASE_URL;
     baseInput.value = item.base_url || '';
-    if(protocolInput) protocolInput.value = item.id === 'runninghub' ? 'runninghub' : item.id === 'volcengine' ? 'volcengine' : item.id === 'jimeng' ? 'jimeng' : (item.protocol || 'openai');
+    if(protocolInput) protocolInput.value = item.id === 'runninghub' ? 'runninghub' : item.id === 'volcengine' ? 'volcengine' : item.id === 'jimeng' ? 'jimeng' : item.id === 'weshop' ? 'weshop' : (item.protocol || 'openai');
     if(imageRequestModeInput) imageRequestModeInput.value = normalizeImageRequestMode(item.image_request_mode);
     keyInput.value = '';
     keyInput.placeholder = item.has_key ? `${tr('api.keepCurrentKey')} ${item.key_preview || ''}` : tr('api.enterKey');
@@ -2216,6 +2277,7 @@ function renderEditor(){
     const isVolcengine = item.id === 'volcengine' || String(protocolInput?.value || item.protocol || '').toLowerCase() === 'volcengine';
     const isStandaloneVolcengine = item.id === 'volcengine';
     const isJimeng = item.id === 'jimeng' || String(protocolInput?.value || item.protocol || '').toLowerCase() === 'jimeng';
+    const isWeshop = item.id === 'weshop' || String(protocolInput?.value || item.protocol || '').toLowerCase() === 'weshop';
     if(isRunningHub){
         ensureRunningHubLists(item);
         if(rhFreeKeyInput){
@@ -2258,16 +2320,37 @@ function renderEditor(){
         keyInput.placeholder = '即梦 CLI 使用本机 dreamina login，无需 API Key';
         keyHint.textContent = '请先在终端安装 dreamina CLI，并执行 dreamina login';
     }
+    if(isWeshop){
+        item.base_url = item.base_url || WESHOP_DEFAULT_BASE_URL;
+        item.protocol = 'weshop';
+        item.image_models = unique([...(item.image_models || []), ...WESHOP_DEFAULT_IMAGE_MODELS]);
+        item.video_models = unique([...(item.video_models || []), ...WESHOP_DEFAULT_VIDEO_MODELS]);
+        baseInput.placeholder = WESHOP_DEFAULT_BASE_URL;
+        keyInput.placeholder = item.has_key ? `保持当前 WeShop API Key ${item.key_preview || ''}` : '输入 WeShop API Key';
+        keyHint.textContent = item.has_key ? `WeShop API Key 已保存：${item.key_env || 'API/.env'} ${item.key_preview || ''}` : '还没有保存 WeShop API Key。';
+    }
     document.body.classList.toggle('show-ms', isModelScope);
     document.body.classList.toggle('show-runninghub', isRunningHub);
     document.body.classList.toggle('show-volcengine', isVolcengine);
     document.body.classList.toggle('show-volcengine-standalone', isStandaloneVolcengine);
     document.body.classList.toggle('show-jimeng', isJimeng);
+    document.body.classList.toggle('show-weshop', isWeshop);
+    if(!isWeshop){
+        document.body.classList.remove('weshop-api-ready-state', 'weshop-key-flash');
+        if(weshopApiReadyNotice) weshopApiReadyNotice.hidden = true;
+    }
     renderProviderOnboarding(item);
     renderRecommendApi();
     if(runninghubConfigBlock){
         runninghubConfigBlock.hidden = !isRunningHub;
         runninghubConfigBlock.style.display = isRunningHub ? 'flex' : 'none';
+    }
+    if(weshopMemberEmbed){
+        weshopMemberEmbed.hidden = !isWeshop;
+        weshopMemberEmbed.style.display = isWeshop ? 'flex' : 'none';
+    }
+    if(isWeshop && weshopMemberFrame && !weshopMemberFrame.src){
+        weshopMemberFrame.src = weshopMemberUrl();
     }
     if(!isRunningHub){
         if(rhPasteInput) rhPasteInput.value = '';
@@ -2476,7 +2559,7 @@ function applyDetectedImageRequestMode(mode){
 function applyDetectedProtocol(protocol){
     const item = provider();
     const detected = String(protocol || '').toLowerCase();
-    if(!item || !protocolInput || !['openai', 'apimart', 'gemini', 'volcengine', 'runninghub', 'jimeng'].includes(detected)) return false;
+    if(!item || !protocolInput || !['openai', 'apimart', 'gemini', 'volcengine', 'runninghub', 'jimeng', 'weshop'].includes(detected)) return false;
     if(String(protocolInput.value || '').toLowerCase() === detected && String(item.protocol || '').toLowerCase() === detected) return false;
     protocolInput.value = detected;
     item.protocol = detected;
@@ -2517,6 +2600,12 @@ function runninghubModelSourceNote(data){
     const text = parts.join(' · ');
     const warning = source === 'fallback' ? ' · 官方模型列表未拉到完整数据' : '';
     return text ? ` · ${text}${warning}` : '';
+}
+function upstreamModelCount(data){
+    if(data?.model_count !== undefined && data?.model_count !== null) return Number(data.model_count || 0);
+    if(data?.total !== undefined && data?.total !== null) return Number(data.total || 0);
+    if(Array.isArray(data?.all)) return data.all.length;
+    return 0;
 }
 
 async function probeAsync(){
@@ -2574,7 +2663,7 @@ async function probeAsync(){
         const detectedProtocol = String(data.protocol || '').toLowerCase();
         const isAsync = data.ok === true && detectedProtocol === 'apimart';
         const isOpenAiCompat = data.ok === true && detectedProtocol === 'openai';
-        const keepManualProtocol = ['gemini', 'volcengine', 'jimeng'].includes(currentProtocol);
+        const keepManualProtocol = ['gemini', 'volcengine', 'jimeng', 'weshop'].includes(currentProtocol);
         if(protocolInput && !keepManualProtocol){
             applyDetectedProtocol(detectedProtocol || (isAsync ? 'apimart' : 'openai'));
         }
@@ -2601,7 +2690,7 @@ async function probeAsync(){
                 <pre style="margin-top:6px;padding:10px 12px;border-radius:10px;background:var(--soft);border:1px solid var(--line-2);font-size:10.5px;font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-all;color:var(--text);max-height:200px;overflow:auto">${escapeHtml(rawJson)}</pre>
             </details>`);
     } catch(e){
-        const keepManualProtocol = ['gemini', 'volcengine', 'jimeng'].includes(String(protocolInput?.value || item.protocol || '').toLowerCase());
+        const keepManualProtocol = ['gemini', 'volcengine', 'jimeng', 'weshop'].includes(String(protocolInput?.value || item.protocol || '').toLowerCase());
         if(protocolInput && !keepManualProtocol){ protocolInput.value = 'openai'; protocolInput.dispatchEvent(new Event('change')); }
         const suffix = keepManualProtocol ? '，已保留当前手动选择的协议' : '，协议已设为 OpenAI 兼容';
         showVerifyResult(`<div style="font-size:11px;font-weight:800;color:#b45309">⚠ ${escapeHtml(e.message || String(e))}${suffix}</div>`);
@@ -2660,7 +2749,7 @@ async function testConnection(){
             const runninghubNote = isRunningHubNow
                 ? ` · RunningHub OpenAPI${runninghubModelSourceNote(data)}`
                 : imageModeNote;
-            showVerifyResult(`<span style="color:#15803d;font-size:11px;font-weight:800">✓ 地址验证通过 · 找到 ${data.model_count} 个模型${runninghubNote}</span>${volcengineNote}${jimengNote}`);
+            showVerifyResult(`<span style="color:#15803d;font-size:11px;font-weight:800">✓ 地址验证通过 · 找到 ${upstreamModelCount(data)} 个模型${runninghubNote}</span>${volcengineNote}${jimengNote}`);
         } else {
             showVerifyResult(`
                 <div style="font-size:11px;font-weight:800;color:#b45309">⚠ 地址验证未通过 (HTTP ${data.status})</div>
@@ -2855,7 +2944,7 @@ async function clearKeyOnly(){
     const ok = await saveProviders();
     if(ok) keyInput.value = '';
 }
-const FIXED_PROTOCOL_PROVIDER_IDS = new Set(['modelscope', 'volcengine', 'jimeng', 'runninghub']);
+const FIXED_PROTOCOL_PROVIDER_IDS = new Set(['modelscope', 'volcengine', 'jimeng', 'runninghub', 'weshop']);
 function providerSupportsModelProtocol(item){
     return Boolean(item) && !FIXED_PROTOCOL_PROVIDER_IDS.has(item.id);
 }
@@ -3101,10 +3190,16 @@ async function loadProviders(){
     try {
         const data = await fetch('/api/providers').then(r => r.json());
         providers = data.providers || [];
-        selectedId = sortedProviders()[0]?.id || '';
+        selectedId = isWeshopPaySuccessReturn() && providers.some(item => item.id === 'weshop')
+            ? 'weshop'
+            : defaultSelectedProvider()?.id || '';
         renderEditor();
         openRecommendApi();
         setStatus('');
+        if(isWeshopPaySuccessReturn()){
+            clearWeshopPaySuccessUrl();
+            handleWeshopPaymentSuccessWithoutKey();
+        }
     } catch(err) {
         setStatus(tr('api.loadFailed'));
     }
@@ -3119,9 +3214,11 @@ async function saveProviders(){
             ? 'volcengine'
             : item.id === 'jimeng'
             ? 'jimeng'
-            : ['openai', 'apimart', 'gemini', 'volcengine', 'runninghub', 'jimeng'].includes(String(item.protocol || '').toLowerCase()) ? String(item.protocol).toLowerCase() : 'openai';
+            : item.id === 'weshop'
+            ? 'weshop'
+            : ['openai', 'apimart', 'gemini', 'volcengine', 'runninghub', 'jimeng', 'weshop'].includes(String(item.protocol || '').toLowerCase()) ? String(item.protocol).toLowerCase() : 'openai';
         item.image_request_mode = normalizeImageRequestMode(
-            item.id === 'modelscope' || item.id === 'runninghub' || item.id === 'volcengine' || item.id === 'jimeng'
+            item.id === 'modelscope' || item.id === 'runninghub' || item.id === 'volcengine' || item.id === 'jimeng' || item.id === 'weshop'
                 ? 'openai'
                 : item.image_request_mode
         );
@@ -3132,6 +3229,11 @@ async function saveProviders(){
             item.image_models = unique(item.image_models || []);
             item.chat_models = unique(item.chat_models || []);
             item.video_models = unique(item.video_models || []);
+        }
+        if(item.id === 'weshop'){
+            item.base_url = item.base_url || WESHOP_DEFAULT_BASE_URL;
+            item.image_models = unique([...(item.image_models || []), ...WESHOP_DEFAULT_IMAGE_MODELS]);
+            item.video_models = unique([...(item.video_models || []), ...WESHOP_DEFAULT_VIDEO_MODELS]);
         }
         item.image_generation_endpoint = '';
         item.image_edit_endpoint = '';
@@ -3162,7 +3264,7 @@ async function saveProviders(){
                 id:item.id,
                 name:item.name,
                 base_url:item.base_url,
-                protocol:(item.id === 'modelscope') ? 'openai' : item.id === 'runninghub' ? 'runninghub' : item.id === 'volcengine' ? 'volcengine' : item.id === 'jimeng' ? 'jimeng' : (item.protocol || 'openai'),
+                protocol:(item.id === 'modelscope') ? 'openai' : item.id === 'runninghub' ? 'runninghub' : item.id === 'volcengine' ? 'volcengine' : item.id === 'jimeng' ? 'jimeng' : item.id === 'weshop' ? 'weshop' : (item.protocol || 'openai'),
                 image_request_mode:item.image_request_mode || 'openai',
                 image_generation_endpoint:item.image_generation_endpoint || '',
                 image_edit_endpoint:item.image_edit_endpoint || '',
@@ -3216,7 +3318,71 @@ function escapeHtml(str){
     return String(str || '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
 }
 function escapeAttr(str){ return escapeHtml(str).replace(/`/g, '&#96;'); }
+function showWeshopApiReadyFeedback(){
+    if(weshopApiReadyNotice){
+        const title = weshopApiReadyNotice.querySelector('.weshop-api-ready-title');
+        const desc = weshopApiReadyNotice.querySelector('.weshop-api-ready-desc');
+        if(title) title.textContent = 'WeShop API Key 已保存';
+        if(desc) desc.textContent = '现在可以在下方查看可用模型，并回到画布使用 WeShop AI 生图或生视频。';
+        weshopApiReadyNotice.hidden = false;
+    }
+    document.body.classList.add('weshop-api-ready-state');
+    document.body.classList.remove('weshop-key-flash');
+    void document.body.offsetWidth;
+    document.body.classList.add('weshop-key-flash');
+    const target = weshopApiReadyNotice || keyInput;
+    setTimeout(() => target?.scrollIntoView?.({behavior:'smooth', block:'center'}), 80);
+    refreshIcons();
+}
+function handleWeshopPaymentSuccessWithoutKey(){
+    if(selectedId !== 'weshop') selectProvider('weshop');
+    if(weshopApiReadyNotice){
+        const title = weshopApiReadyNotice.querySelector('.weshop-api-ready-title');
+        const desc = weshopApiReadyNotice.querySelector('.weshop-api-ready-desc');
+        if(title) title.textContent = '支付成功，等待 API Key';
+        if(desc) desc.textContent = 'WeShop 后端暂未返回 API Key，请稍后在此处填写或等待自动下发。';
+        weshopApiReadyNotice.hidden = false;
+    }
+    document.body.classList.add('weshop-api-ready-state');
+    setStatus('支付成功，但暂未收到 WeShop API Key');
+    setTimeout(() => weshopApiReadyNotice?.scrollIntoView?.({behavior:'smooth', block:'center'}), 80);
+    refreshIcons();
+}
+async function saveWeshopApiKeyFromMember(apiKey, sourceLabel){
+    const key = String(apiKey || '').trim();
+    if(!key || !keyInput) return false;
+    if(selectedId !== 'weshop') selectProvider('weshop');
+    keyInput.value = key;
+    setStatus(sourceLabel || 'WeShop API Key 已自动填入，正在保存...');
+    const ok = await saveKeyOnly();
+    if(ok){
+        showWeshopApiReadyFeedback();
+        setStatus('WeShop API Key 已保存，可以在画布中使用');
+    }
+    return ok;
+}
+async function handleWeshopMemberMessage(event){
+    if(!WESHOP_MEMBER_ORIGINS.has(event.origin)) return false;
+    const data = event.data || {};
+    const type = String(data.type || '');
+    if(type === 'weshop:checkout-url' || type === 'weshop:redirect-checkout'){
+        const url = String(data.url || data.checkoutUrl || '').trim();
+        if(url && /^https:\/\/(checkout\.stripe\.com|www\.weshop\.ai|pre\.weshop\.ai)\//.test(url)){
+            window.open(url, '_blank', 'noopener');
+            setStatus('已在新窗口打开 WeShop 购买页面');
+        }
+        return true;
+    }
+    if(type === 'weshop:api-key-issued' || type === 'weshop:payment-success' || type === 'weshop:pay-success'){
+        const apiKey = String(data.apiKey || data.api_key || '').trim();
+        if(apiKey) await saveWeshopApiKeyFromMember(apiKey, 'WeShop API Key 已自动填入，正在保存...');
+        else handleWeshopPaymentSuccessWithoutKey();
+        return true;
+    }
+    return false;
+}
 window.addEventListener('message', event => {
+    handleWeshopMemberMessage(event);
     if(event.data?.type === 'studio-theme' && window.StudioTheme) window.StudioTheme.set(event.data.theme);
     if(event.data?.type === 'studio-lang' && window.StudioI18n) {
         window.StudioI18n.set(event.data.lang);
