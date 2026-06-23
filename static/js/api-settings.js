@@ -70,8 +70,8 @@ const MS_BUILTIN_IMAGE_MODELS = [
 const MS_DEFAULT_BASE_URL = 'https://api-inference.modelscope.cn/v1';
 const RH_DEFAULT_BASE_URL = 'https://www.runninghub.cn';
 const WESHOP_DEFAULT_BASE_URL = 'https://openapi.weshop.ai';
-const WESHOP_MEMBER_URL = 'https://pre.weshop.ai/infinite-canvas-member?checkout_target=top';
-const WESHOP_MEMBER_ORIGINS = new Set(['https://www.weshop.ai', 'https://pre.weshop.ai']);
+const WESHOP_MEMBER_URL = 'https://www.weshop.ai/infinite-canvas-member?checkout_target=top';
+const WESHOP_MEMBER_ORIGINS = new Set(['https://www.weshop.ai']);
 const WESHOP_PAY_SUCCESS_PARAMS = new Set(['weshopPaySuccess', 'paySuccess']);
 const EXAMPLE_BASE_URL = 'https://api.example.com/v1';
 const JIMENG_DEFAULT_IMAGE_MODELS = ['5.0', '4.6', '4.5', '4.1', '4.0', '3.1', '3.0'];
