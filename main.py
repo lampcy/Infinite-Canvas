@@ -324,6 +324,7 @@ RUNNINGHUB_DEFAULT_BASE_URL = "https://www.runninghub.cn"
 RUNNINGHUB_OPENAPI_BASE_URL = "https://www.runninghub.cn/openapi/v2"
 RUNNINGHUB_MODEL_REGISTRY_URL = "https://raw.githubusercontent.com/HM-RunningHub/ComfyUI_RH_OpenAPI/main/models_registry.json"
 RUNNINGHUB_LLM_BASE_URL = "https://llm.runninghub.cn/v1"
+LINGJING_DEFAULT_BASE_URL = "https://apistudio.vip"
 RUNNINGHUB_LLM_MODELS_URLS = [
     "https://llm.runninghub.cn/v1/models",
     "https://llm.runninghub.ai/v1/models",
@@ -824,6 +825,23 @@ def default_api_providers():
             "ms_loras": [],
             "ms_defaults_version": 0,
         },
+        {
+            "id": "lingjing",
+            "name": "灵境API",
+            "base_url": LINGJING_DEFAULT_BASE_URL,
+            "protocol": "openai",
+            "image_request_mode": "openai",
+            "image_generation_endpoint": "",
+            "image_edit_endpoint": "",
+            "enabled": True,
+            "primary": False,
+            "image_models": ["gpt-image-2", "gemini-3.1-flash-image-preview", "gemini-3-pro-image-preview"],
+            "chat_models": ["gpt-5.5"],
+            "video_models": ["veo3.1-fast"],
+            "model_protocols": {"gemini-3.1-flash-image-preview": "gemini", "gemini-3-pro-image-preview": "gemini"},
+            "ms_loras": [],
+            "ms_defaults_version": 0,
+        },
     ]
 
 def merge_default_api_providers(providers):
@@ -895,6 +913,23 @@ def merge_default_api_providers(providers):
             current["base_url"] = current.get("base_url") or WESHOP_DEFAULT_BASE_URL
             current["image_models"] = model_list_from_values([*(current.get("image_models") or []), *WESHOP_DEFAULT_IMAGE_MODELS])
             current["video_models"] = model_list_from_values([*(current.get("video_models") or []), *WESHOP_DEFAULT_VIDEO_MODELS])
+    lingjing_default = next((d for d in default_api_providers() if d["id"] == "lingjing"), None)
+    if lingjing_default:
+        current = next((item for item in merged if item.get("id") == "lingjing"), None)
+        if not current:
+            merged.append(lingjing_default)
+        else:
+            if not current.get("base_url"):
+                current["base_url"] = lingjing_default["base_url"]
+            if not current.get("protocol"):
+                current["protocol"] = "openai"
+            current["image_request_mode"] = normalize_image_request_mode(current.get("image_request_mode"))
+            current["image_models"] = model_list_from_values([*(current.get("image_models") or []), *(lingjing_default.get("image_models") or [])])
+            current["chat_models"] = model_list_from_values([*(current.get("chat_models") or []), *(lingjing_default.get("chat_models") or [])])
+            current["video_models"] = model_list_from_values([*(current.get("video_models") or []), *(lingjing_default.get("video_models") or [])])
+            protocols = normalize_model_protocols(current.get("model_protocols"))
+            protocols.update(normalize_model_protocols(lingjing_default.get("model_protocols")))
+            current["model_protocols"] = protocols
     # 即梦 CLI 不再是强制保留的默认平台：仅在用户已添加了即梦协议的平台时，规范化其默认模型/地址。
     for current in merged:
         if not is_jimeng_provider(current):
@@ -2592,6 +2627,9 @@ class CanvasCreateRequest(BaseModel):
     title: str = "未命名画布"
     icon: str = "🧩"
     kind: str = "classic"
+    project: Optional[str] = None
+    board_x: Optional[float] = None
+    board_y: Optional[float] = None
 
 class CanvasMetaUpdate(BaseModel):
     title: Optional[str] = None
@@ -2599,6 +2637,16 @@ class CanvasMetaUpdate(BaseModel):
     owner: Optional[str] = None
     color: Optional[str] = None
     pinned: Optional[bool] = None
+    project: Optional[str] = None
+    board_x: Optional[float] = None
+    board_y: Optional[float] = None
+
+class ProjectCreateRequest(BaseModel):
+    name: str = "新项目"
+
+class ProjectUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    order: Optional[int] = None
 
 class CanvasSaveRequest(BaseModel):
     title: str = "未命名画布"
@@ -3110,7 +3158,71 @@ def save_canvas(canvas):
 def normalize_canvas_kind(kind="classic"):
     return "smart" if str(kind or "").strip().lower() == "smart" else "classic"
 
-def new_canvas(title="未命名画布", icon="layers", kind="classic"):
+# ===== 项目（按项目分类管理画布）=====
+PROJECTS_PATH = os.path.join(DATA_DIR, "projects.json")
+DEFAULT_PROJECT_ID = "default"
+
+def load_projects():
+    try:
+        with open(PROJECTS_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        projects = data.get("projects") if isinstance(data, dict) else data
+        if isinstance(projects, list):
+            return [p for p in projects if isinstance(p, dict) and p.get("id")]
+    except Exception:
+        pass
+    return []
+
+def save_projects(projects):
+    with CANVAS_LOCK:
+        with open(PROJECTS_PATH, 'w', encoding='utf-8') as f:
+            json.dump({"projects": projects}, f, ensure_ascii=False, indent=2)
+
+def project_record(p):
+    return {
+        "id": p.get("id"),
+        "name": (p.get("name") or "未命名项目")[:60],
+        "order": int(p.get("order") or 0),
+        "created_at": p.get("created_at", 0),
+        "updated_at": p.get("updated_at", 0),
+    }
+
+def ensure_default_project():
+    """保证存在一个“默认项目”，并把没有归属项目的画布迁移进去（一次性、幂等）。"""
+    projects = load_projects()
+    changed = False
+    if not any(p.get("id") == DEFAULT_PROJECT_ID for p in projects):
+        ts = now_ms()
+        projects.insert(0, {"id": DEFAULT_PROJECT_ID, "name": "默认项目", "order": 0, "created_at": ts, "updated_at": ts})
+        changed = True
+    if changed:
+        save_projects(projects)
+    return projects
+
+def new_project(name="新项目"):
+    projects = ensure_default_project()
+    ts = now_ms()
+    clean = (str(name or "").strip() or "新项目")[:60]
+    order = max([int(p.get("order") or 0) for p in projects], default=0) + 1
+    proj = {"id": uuid.uuid4().hex, "name": clean, "order": order, "created_at": ts, "updated_at": ts}
+    projects.append(proj)
+    save_projects(projects)
+    return proj
+
+def list_projects():
+    projects = ensure_default_project()
+    counts = {}
+    for rec in iter_canvas_records(include_deleted=False):
+        pid = rec.get("project") or DEFAULT_PROJECT_ID
+        counts[pid] = counts.get(pid, 0) + 1
+    out = []
+    for p in sorted(projects, key=lambda x: (int(x.get("order") or 0), x.get("created_at") or 0)):
+        rec = project_record(p)
+        rec["canvas_count"] = counts.get(rec["id"], 0)
+        out.append(rec)
+    return out
+
+def new_canvas(title="未命名画布", icon="layers", kind="classic", project=None, board_x=None, board_y=None):
     timestamp = now_ms()
     canvas_kind = normalize_canvas_kind(kind)
     canvas = {
@@ -3121,12 +3233,17 @@ def new_canvas(title="未命名画布", icon="layers", kind="classic"):
         "owner": "",
         "color": "",
         "pinned": False,
+        "project": str(project or "").strip() or DEFAULT_PROJECT_ID,
         "created_at": timestamp,
         "updated_at": timestamp,
         "nodes": [],
         "connections": [],
         "viewport": {"x": 0, "y": 0, "scale": 1},
     }
+    if board_x is not None:
+        canvas["board_x"] = float(board_x)
+    if board_y is not None:
+        canvas["board_y"] = float(board_y)
     save_canvas(canvas)
     return canvas
 
@@ -3162,6 +3279,9 @@ def canvas_record(data):
         "owner": str(data.get("owner") or "")[:40],
         "color": normalize_canvas_color(data.get("color")),
         "pinned": bool(data.get("pinned") or False),
+        "project": str(data.get("project") or "").strip() or DEFAULT_PROJECT_ID,
+        "board_x": data.get("board_x"),
+        "board_y": data.get("board_y"),
         "created_at": data.get("created_at", 0),
         "updated_at": data.get("updated_at", 0),
         "deleted_at": data.get("deleted_at", 0),
@@ -7024,6 +7144,37 @@ async def save_ai_image_to_output(image_data, prefix="online_", category="output
         print(f"保存上游图片失败: {e}")
         return value
 
+def image_output_meta(url, source_item=None):
+    meta = {"url": url, "kind": "image"}
+    if not url:
+        return meta
+    parsed_name = os.path.basename(urllib.parse.urlparse(str(url)).path)
+    if parsed_name:
+        meta["name"] = parsed_name
+    if isinstance(source_item, dict):
+        for key in ("natural_w", "natural_h", "width", "height", "w", "h", "layout_w", "layout_h"):
+            try:
+                value = int(float(source_item.get(key) or 0))
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0:
+                meta[key] = value
+    path = output_file_from_url(url)
+    if path and os.path.exists(path):
+        try:
+            with Image.open(path) as img:
+                width, height = img.size
+            if width > 0 and height > 0:
+                meta.update({
+                    "natural_w": width,
+                    "natural_h": height,
+                    "width": width,
+                    "height": height,
+                })
+        except Exception:
+            pass
+    return meta
+
 async def save_remote_video_to_output(url, prefix="video_", category="output"):
     if not url:
         return ""
@@ -8321,7 +8472,7 @@ async def runninghub_upload_local_to_filename(client, provider, url, use_wallet=
         return raw["data"]["fileName"]
     raise HTTPException(status_code=502, detail=(raw.get("msg") if isinstance(raw, dict) else "") or f"RunningHub 上传素材失败：{raw}")
 
-async def generate_runninghub_entry_image(prompt, model, reference_images, provider, entry):
+async def generate_runninghub_entry_image(prompt, size, model, reference_images, provider, entry):
     """运行 RunningHub 工作流 / AI 应用（与智能画布一致的运行方式），返回首张图片结果。"""
     kind = entry["kind"]
     entry_id = entry["id"]
@@ -8329,6 +8480,24 @@ async def generate_runninghub_entry_image(prompt, model, reference_images, provi
     idx_map = rh_field_indexes(fields)
     use_wallet = False
     timeout = httpx.Timeout(connect=20.0, read=1800.0, write=240.0, pool=20.0)
+    aspect = runninghub_aspect_from_size(size, "")
+    resolution = runninghub_resolution_from_size(size, "")
+    width, height = parse_size_pair(size)
+    def requested_size_field_value(field):
+        names = {
+            str(field.get("fieldName") or "").strip().lower(),
+            str(field.get("fieldKey") or "").strip().lower(),
+            str(field.get("label") or "").strip().lower(),
+        }
+        if aspect and names & {"aspectratio", "aspect_ratio", "ratio"}:
+            return runninghub_schema_value(field, aspect)
+        if resolution and "resolution" in names:
+            return runninghub_schema_value(field, resolution)
+        if width and "width" in names:
+            return width
+        if height and "height" in names:
+            return height
+        return None
     async with httpx.AsyncClient(timeout=timeout) as client:
         uploaded = []
         for ref in (reference_images or [])[:ONLINE_IMAGE_REFERENCE_MAX]:
@@ -8367,7 +8536,10 @@ async def generate_runninghub_entry_image(prompt, model, reference_images, provi
             elif kind_f == "number" and field.get("random_enabled") is True:
                 node_info_list.append({"nodeId": node_id, "fieldName": field_name, "fieldValue": rh_random_field_value(field)})
             else:
-                node_info_list.append({"nodeId": node_id, "fieldName": field_name, "fieldValue": rh_default_value(field)})
+                value = requested_size_field_value(field)
+                if value is None:
+                    value = rh_default_value(field)
+                node_info_list.append({"nodeId": node_id, "fieldName": field_name, "fieldValue": value})
 
         api_key = runninghub_api_key(provider, use_wallet=use_wallet)
         if kind == "workflow":
@@ -8410,7 +8582,7 @@ async def generate_runninghub_entry_image(prompt, model, reference_images, provi
 async def generate_runninghub_provider_image(prompt, size, model, reference_images=None, provider=None):
     entry = runninghub_entry_config_from_model(provider, model)
     if entry:
-        return await generate_runninghub_entry_image(prompt, model, reference_images, provider, entry)
+        return await generate_runninghub_entry_image(prompt, size, model, reference_images, provider, entry)
     model_def = await runninghub_model_definition(provider, model)
     endpoint = runninghub_task_endpoint(provider, model_def.get("endpoint") or model)
     params = model_def.get("params") if isinstance(model_def.get("params"), list) else []
@@ -10275,13 +10447,16 @@ async def runninghub_query(taskId: str = ""):
         code = raw.get("code") if isinstance(raw, dict) else None
         status = "PENDING"
         urls = []
+        image_items = []
         if code in (0, "0"):
             status = "SUCCESS"
             for remote in runninghub_extract_outputs(raw.get("data")):
                 try:
-                    urls.append(await runninghub_store_remote_output(client, remote))
+                    local_url = await runninghub_store_remote_output(client, remote)
                 except Exception:
-                    urls.append(remote)
+                    local_url = remote
+                urls.append(local_url)
+                image_items.append(image_output_meta(local_url))
         elif code in (804, "804"):
             status = "RUNNING"
         elif code in (813, "813"):
@@ -10290,7 +10465,7 @@ async def runninghub_query(taskId: str = ""):
             status = "FAILED"
         else:
             status = "UNKNOWN"
-        return {"success": True, "data": {"status": status, "urls": urls, "failReason": runninghub_fail_reason(raw), "code": code, "raw": raw}}
+        return {"success": True, "data": {"status": status, "urls": urls, "image_items": image_items, "failReason": runninghub_fail_reason(raw), "code": code, "raw": raw}}
 
 @app.post("/api/runninghub/upload-asset")
 async def runninghub_upload_asset(payload: RunningHubUploadAssetRequest):
@@ -11222,11 +11397,13 @@ async def build_online_image_result(payload: OnlineImageRequest):
         except HTTPException:
             image_items = [image_data]
         local_urls = []
+        local_items = []
         for item in image_items:
             local_url = await save_ai_image_to_output(item, prefix="online_")
             if local_url:
                 local_urls.append(local_url)
-        return local_urls, raw_item
+                local_items.append(image_output_meta(local_url, item))
+        return local_urls, local_items, raw_item
     try:
         generated = await asyncio.gather(*(generate_one() for _ in range(count)))
     except httpx.HTTPStatusError as exc:
@@ -11239,8 +11416,9 @@ async def build_online_image_result(payload: OnlineImageRequest):
         log_net_error(f"生图 网络/TLS错误 provider={provider.get('id')} model={model}", exc)
         raise HTTPException(status_code=502, detail=f"请求上游生图接口失败：{exc}") from exc
 
-    local_urls = [url for urls, _raw in generated for url in (urls or []) if url]
-    raw = generated[0][1] if generated else {}
+    local_urls = [url for urls, _items, _raw in generated for url in (urls or []) if url]
+    local_items = [item for _urls, items, _raw in generated for item in (items or []) if item.get("url")]
+    raw = generated[0][2] if generated else {}
     if not local_urls:
         provider_name = provider.get("name") or provider["id"]
         raw_text = json.dumps(raw, ensure_ascii=False)[:800] if isinstance(raw, (dict, list)) else str(raw)[:800]
@@ -11248,6 +11426,7 @@ async def build_online_image_result(payload: OnlineImageRequest):
     result = {
         "prompt": payload.prompt,
         "images": local_urls,
+        "image_items": local_items,
         "timestamp": time.time(),
         "type": "online",
         "model": model,
@@ -11291,14 +11470,17 @@ async def query_image_task(payload: ImageTaskQueryRequest):
         image_items = []
     if image_items:
         local_urls = []
+        local_items = []
         for item in image_items:
             local_url = await save_ai_image_to_output(item, prefix="online_")
             if local_url:
                 local_urls.append(local_url)
+                local_items.append(image_output_meta(local_url, item))
         result = {
             "status": "succeeded",
             "prompt": "",
             "images": local_urls,
+            "image_items": local_items,
             "timestamp": time.time(),
             "type": "online",
             "model": "",
@@ -12533,13 +12715,64 @@ async def delete_conversation(conversation_id: str, request: Request, x_user_id:
 async def canvases():
     return {"canvases": list_canvases()}
 
+@app.get("/api/projects")
+async def get_projects():
+    return {"projects": list_projects()}
+
+@app.post("/api/projects")
+async def create_project(payload: ProjectCreateRequest):
+    return {"project": project_record(new_project(payload.name))}
+
+@app.post("/api/projects/{project_id}")
+async def update_project(project_id: str, payload: ProjectUpdateRequest):
+    projects = ensure_default_project()
+    target = next((p for p in projects if p.get("id") == project_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    if payload.name is not None:
+        target["name"] = (str(payload.name).strip() or target.get("name") or "未命名项目")[:60]
+    if payload.order is not None:
+        target["order"] = int(payload.order)
+    target["updated_at"] = now_ms()
+    save_projects(projects)
+    return {"project": project_record(target)}
+
+@app.delete("/api/projects/{project_id}")
+async def delete_project(project_id: str):
+    """删除项目：默认项目不可删除；其余项目删除后，其下画布回归默认项目（不删画布）。"""
+    if project_id == DEFAULT_PROJECT_ID:
+        raise HTTPException(status_code=400, detail="默认项目不可删除")
+    projects = ensure_default_project()
+    if not any(p.get("id") == project_id for p in projects):
+        raise HTTPException(status_code=404, detail="项目不存在")
+    projects = [p for p in projects if p.get("id") != project_id]
+    save_projects(projects)
+    # 把该项目下的画布迁回默认项目
+    moved = 0
+    with CANVAS_LOCK:
+        for filename in os.listdir(CANVAS_DIR):
+            if not filename.endswith(".json"):
+                continue
+            path = os.path.join(CANVAS_DIR, filename)
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            except Exception:
+                continue
+            if str(data.get("project") or "") == project_id:
+                data["project"] = DEFAULT_PROJECT_ID
+                with open(path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                moved += 1
+    return {"ok": True, "moved": moved}
+
 @app.get("/api/canvases/trash")
 async def trashed_canvases():
     return {"canvases": list_deleted_canvases(), "retention_days": 30}
 
 @app.post("/api/canvases")
 async def create_canvas(payload: CanvasCreateRequest):
-    return {"canvas": new_canvas(payload.title, payload.icon, payload.kind)}
+    return {"canvas": new_canvas(payload.title, payload.icon, payload.kind, payload.project, payload.board_x, payload.board_y)}
 
 @app.get("/api/canvases/{canvas_id}/meta")
 async def get_canvas_meta(canvas_id: str):
@@ -12567,6 +12800,12 @@ async def update_canvas_meta(canvas_id: str, payload: CanvasMetaUpdate):
         canvas["color"] = normalize_canvas_color(payload.color)
     if payload.pinned is not None:
         canvas["pinned"] = bool(payload.pinned)
+    if payload.project is not None:
+        canvas["project"] = str(payload.project).strip() or DEFAULT_PROJECT_ID
+    if payload.board_x is not None:
+        canvas["board_x"] = float(payload.board_x)
+    if payload.board_y is not None:
+        canvas["board_y"] = float(payload.board_y)
     with CANVAS_LOCK:
         with open(canvas_path(canvas["id"]), 'w', encoding='utf-8') as f:
             json.dump(canvas, f, ensure_ascii=False, indent=2)
